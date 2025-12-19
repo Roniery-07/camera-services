@@ -1,0 +1,10 @@
+WARNING:werkzeug: * Debugger is active!
+INFO:werkzeug: * Debugger PIN: 136-372-851
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:15] "GET / HTTP/1.1" 200 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:15] "GET /video_feed HTTP/1.1" 200 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:16] "POST /show_bbox HTTP/1.1" 200 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:16] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:21] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:29] "POST /focar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:39] "POST /focar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:177.74.227.252 - - [04/Nov/2025 17:19:46] "POST /focar_ptz HTTP/1.1" 200 -

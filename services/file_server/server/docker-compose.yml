@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  video-server:
+    container_name: FileServer01
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - /AoF_Deteccoes:/app/videos
+    env_file:
+      - .env
+    restart: unless-stopped

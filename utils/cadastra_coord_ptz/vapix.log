@@ -1,0 +1,27 @@
+WARNING:werkzeug: * Debugger is active!
+INFO:werkzeug: * Debugger PIN: 136-372-851
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:46:52] "GET / HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:46:52] "GET /video_feed HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:46:58] "GET / HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:46:59] "GET /video_feed HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:46:59] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:51:24] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:51:42] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:52:17] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:52:19] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:52:36] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:52:46] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:52:48] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:52:49] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:53:09] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:53:14] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:53:15] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:53:28] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:53:35] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:53:58] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:54:00] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:54:02] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:54:25] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:54:27] "POST /salvar_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:54:49] "POST /pega_ptz HTTP/1.1" 200 -
+INFO:werkzeug:200.131.53.26 - - [18/Jun/2025 13:54:50] "POST /salvar_ptz HTTP/1.1" 200 -

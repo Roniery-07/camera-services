@@ -1,0 +1,36 @@
+zabbix_export:
+  version: '7.0'
+  host_groups:
+    - uuid: 1f43e1c19ced4d19a51de5b64265014e
+      name: Servidores
+  hosts:
+    - host: WorkersTFAI
+      name: WorkersTFAI
+      groups:
+        - name: Servidores
+      discovery_rules:
+        - name: 'TFAI Workers Discovery'
+          type: TRAP
+          key: tfai.workers.discovery
+          delay: '0'
+          lifetime_type: DELETE_NEVER
+          lifetime: '0'
+          enabled_lifetime_type: DISABLE_NEVER
+          item_prototypes:
+            - name: 'Tempo médio de processamento por {#WORKERNAME}'
+              type: TRAP
+              key: 'tfai.worker.avg_process_time[{#WORKERNAME}]'
+              delay: '0'
+              history: 7d
+              value_type: FLOAT
+              units: s
+            - name: 'Frames processados por {#WORKERNAME}'
+              type: TRAP
+              key: 'tfai.worker.frames_processed[{#WORKERNAME}]'
+              delay: '0'
+              history: 7d
+              trigger_prototypes:
+                - expression: 'nodata(/WorkersTFAI/tfai.worker.frames_processed[{#WORKERNAME}],300)=1'
+                  name: 'Worker {#WORKERNAME} não está enviando dados'
+                  priority: DISASTER
+      inventory_mode: DISABLED

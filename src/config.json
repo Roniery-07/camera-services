@@ -1,0 +1,36 @@
+{
+  "rabbitmq": {
+    "host": "10.0.5.14",
+    "port": 5672,
+    "user": "AoF",
+    "password": "Issp2006!",
+    "virtual_host": "/",
+    "exchange": "",
+    "routing_key": "aof_camera_frames_dev"
+  },
+  "zabbix": {
+    "zbx_server_ip": "10.0.5.252",
+    "zbx_hostname": "AoFNGDDev"
+  },
+  "database": {
+   "host": "10.0.5.103",
+   "user": "AoFessaysBBKEnd_Dev",
+   "password": "YNc1n0CwWZN8SA[*",
+   "database": "AoFessays_Dev"
+  },
+  "locais": {
+    "diretorio_videos": "/AoF_Deteccoes",
+    "arquivo_log": "/var/log/aof_ng_d.log"
+  },
+  "detector": {
+    "max_fps_processamento": 2,
+    "CLASSES": ["Fumaca", "Fogo"],
+    "COLORS": [[0, 255, 255], [0, 0, 255]]
+  },
+  "telegram": {
+    "bot_token": "1096125973:AAGtMnt0-G3wQVAIKAz-RXw-gNsENQ7y2hY"
+  },
+  "cameras": {
+    "zm_monitor_id": []
+  }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=AoF Worker RabbitMQ
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/src/yolovenv/bin/python /usr/local/src/AoFNG/services/aof_worker/aof-worker.py
+Restart=always
+RestartSec=5
+WatchdogSec=120
+User=root
+WorkingDirectory=/usr/local/src/AoFNG/services/aof_worker
+Environment="PATH=/usr/local/src/yolovenv/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

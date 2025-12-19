@@ -1,0 +1,16 @@
+[Unit]
+Description=AoF Bot Telegram
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/src/AoFNGD-venv/bin/python /usr/local/src/AoFNGD/services/aof_botelegram/aof_botelegram.py
+Restart=always
+RestartSec=5
+WatchdogSec=30
+User=root
+WorkingDirectory=/usr/local/src/AoFNGD/services/aof_botelegram
+Environment="PATH=/usr/local/src/AoFNGD-venv/bin/python:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Envia Notificações para o Telegram
+After=network.target
+
+[Service]
+Type=simple
+# Caminho do interpretador Python do seu virtualenv
+ExecStart=/usr/local/src/AoFNGD-venv/bin/python /usr/local/src/AoFNGD/services/envia_notificacao/envia_notificacao.py
+Restart=always
+RestartSec=5
+WatchdogSec=10
+User=root
+WorkingDirectory=/usr/local/src/AoFNGD/services/envia_notificacao
+Environment="PATH=/usr/local/src/AoFNGD-venv/bin/python:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

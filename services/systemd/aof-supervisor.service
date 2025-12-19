@@ -1,0 +1,16 @@
+[Unit]
+Description=AoF Supervisor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/src/AoFNGD-venv/bin/python /usr/local/src/AoFNGD/src/Supervisor.py
+Restart=always
+RestartSec=5
+WatchdogSec=120
+User=root
+WorkingDirectory=/usr/local/src/AoFNGD/src
+Environment="PATH=/usr/local/src/AoFNGD-venv/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target
