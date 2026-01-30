@@ -18,127 +18,120 @@ import re
 import select
 
 # Thread para controle FFMPEG
+import threading
+import subprocess as sp
+import numpy as np
+import time
+import cv2
+import os
+import signal
+
 class RTSPFrameGrabber:
     def __init__(self, rtsp_url, frame_shape, logger, ffmpeg_bin="ffmpeg", reconnect_interval=15):
         self.rtsp_url = rtsp_url
-        self.frame_shape = frame_shape  # (height, width, channels)
+        self.logger = logger
         self.ffmpeg_bin = ffmpeg_bin
-        self.reconnect_interval = reconnect_interval
+        
+        self.width = 640
+        self.height = 360
+        
+#        self.frame_byte_size = self.width * self.height * 3
+        self.frame_byte_size = int(self.width * self.height * 1.5)
         self._frame_lock = threading.Lock()
         self._latest_frame = None
-        self._latest_pts = None
+        self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self.logger = logger
 
     def start(self):
         if not self._thread.is_alive():
+            self._stop_event.clear()
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
+            self.logger.info(f"[Grabber] Iniciado para: {self.rtsp_url}")
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2)
 
     def get_frame(self):
         with self._frame_lock:
             if self._latest_frame is not None:
-                return self._latest_frame.copy(), self._latest_pts
+                return self._latest_frame, None
             else:
                 return None, None
 
     def _run(self):
-        while True:
-            ffmpeg_cmd = [
-                self.ffmpeg_bin,
-                "-hide_banner",
-                "-loglevel", "info",
-                "-threads", "1",
-                "-fflags", "nobuffer",
-                "-flags", "low_delay",
-                "-rtsp_transport", "tcp",
-                "-an",
-                "-c:v", "h264_cuvid",
-                "-i", self.rtsp_url,
-                "-r", "2",
-                "-vf", "showinfo",
-                "-f", "rawvideo",
-                "-pix_fmt", "bgr24",
-                "-"
-            ]
+        while not self._stop_event.is_set():
             process = None
             try:
-                process = sp.Popen(
-                    ffmpeg_cmd,
-                    stdout=sp.PIPE,
-                    stderr=sp.PIPE,
-                    bufsize=-1
-                )
-                frame_size = int(np.prod(self.frame_shape))
-                latest_pts = None
+                ffmpeg_cmd = [
+                    self.ffmpeg_bin,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    
+                    # --- RESILIÊNCIA DE REDE (Essencial para evitar travamentos) ---
+                    "-avoid_negative_ts", "make_zero",
+                    "-fflags", "+genpts+discardcorrupt",
+                    "-rtsp_transport", "tcp",
+                    "-timeout", "5000000",
+                    
+                    # --- HARDWARE DECODER + RESIZER (Tudo em um) ---
+                    # Usa o decoder específico da NVIDIA.
+                    # O argumento -resize aqui é nativo do decoder cuvid (muito rápido)
+                    "-c:v", "h264_cuvid", 
+                    "-resize", f"{self.width}x{self.height}",
+                    
+                    "-i", self.rtsp_url,
+                    
+                    "-r", "5",  # FPS desejado
+                    
+                    # --- SAÍDA ---
+                    # O cuvid entrega NV12 por padrão na GPU, o FFmpeg converte
+                    # automaticamente para YUV420p ao passar para a CPU (pipe)
+                    "-f", "rawvideo",
+                    "-pix_fmt", "yuv420p",
+                    "-"
+                ]
+                process = sp.Popen(ffmpeg_cmd, stdout=sp.PIPE, stderr=sp.PIPE, bufsize=10**7)
 
-                last_frame_time = time.time()
-                timeout_sec = 30  # máximo tempo sem novo frame
-                stagnant_frame_limit = 15  # número máximo de frames repetidos
-                stagnant_frame_count = 0
-                last_pts = None
+                while not self._stop_event.is_set():
+                    # Lê frame compactado (YUV)
+                    raw_bytes = process.stdout.read(self.frame_byte_size)
 
-                while True:
-                    rlist, _, _ = select.select([process.stdout, process.stderr], [], [], 1)
-                    if not rlist:
-                        # Timeout: não recebeu nada
-                        if time.time() - last_frame_time > timeout_sec:
-                            raise RuntimeError("[FFMPEG] Timeout: não recebeu frame em tempo hábil.")
-                        continue
+                    if len(raw_bytes) != self.frame_byte_size:
+                        if not self._stop_event.is_set():
+                            # Tenta ler o erro que sobrou no buffer do stderr
+                            # communicate() fecha o processo e devolve (stdout, stderr)
+                            _, stderr_out = process.communicate()
+                            
+                            msg_erro = "Sem mensagem de erro."
+                            if stderr_out:
+                                msg_erro = stderr_out.decode('utf-8', errors='ignore')
 
-                    if process.stdout in rlist:
-                        raw_frame = process.stdout.read(frame_size)
-                        if len(raw_frame) != frame_size:
-                            self.logger.error("[FFMPEG] Frame size mismatch or stream ended. Expected %d bytes, got %d.", frame_size, len(raw_frame))
-                            raise RuntimeError("[FFMPEG] Frame size mismatch or stream ended.")
+                            self.logger.error(f"[FFmpeg CRASH] Esperado: {self.frame_byte_size}, Recebido: {len(raw_bytes)}")
+                            self.logger.error(f"--- LOG DO FFMPEG ---\n{msg_erro}\n---------------------")
+                        break
 
-                        frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape(self.frame_shape)
-                        last_frame_time = time.time()
-
-                        # Atualiza frame + PTS juntos
-                        with self._frame_lock:
-                            self._latest_frame = frame
-                            self._latest_pts = latest_pts
-
-                        # Detecta frame/PTS estagnado
-                        if latest_pts == last_pts:
-                            stagnant_frame_count += 1
-                            if stagnant_frame_count > stagnant_frame_limit:
-                                raise RuntimeError("[FFMPEG] Frame/PTS estagnado. Reiniciando FFmpeg.")
-                        else:
-                            stagnant_frame_count = 0
-                            last_pts = latest_pts
-
-                    if process.stderr in rlist:
-                        line = process.stderr.readline().decode("utf-8", errors="ignore")
-                        if "pts_time:" in line:
-                            m = re.search(r"pts_time:([0-9]+(?:\.[0-9]+)?)", line)
-                            if m:
-                                latest_pts = float(m.group(1))
+                   
+                    with self._frame_lock:
+                        self._latest_frame = raw_bytes
 
             except Exception as e:
-                sleep_time = self.reconnect_interval
-                self.logger.error(f"[FFMPEG] {e}, reconnecting in {sleep_time}s)")
-                time.sleep(sleep_time)
-            finally:
-                if process is not None:
-                    try:
-                        process.kill()
-                    except Exception as e:
-                        self.logger.warning(f"Error killing FFMPEG: {e}")
-                    try:
-                        process.wait(timeout=5)
-                    except Exception as e:
-                        self.logger.warning(f"Error waiting for FFMPEG termination: {e}")
-                    try:
-                        if process.stdout:
-                            process.stdout.close()
-                        if process.stderr:
-                            process.stderr.close()
-                    except Exception as e:
-                        self.logger.warning(f"Error closing FFMPEG pipes: {e}")
+                self.logger.error(f"[Grabber] Erro: {e}")
 
-# Classe base para todos os tipos de câmeras
+            finally:
+                if process:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=2)
+                    except:
+                        process.kill()
+
+                if not self._stop_event.is_set():
+                    time.sleep(5)
+
+ # Classe base para todos os tipos de câmeras
 class AoFBaseFFMPEG(threading.Thread, ABC):
     def __init__(self, config_sys, config_cam, nome="Camera"):
         super().__init__()  # Nome da thread padrão: Thread-1, Thread-2, etc.
@@ -162,6 +155,8 @@ class AoFBaseFFMPEG(threading.Thread, ABC):
             ffmpeg_bin=config_cam.get("ffmpeg_bin", "ffmpeg"),
             reconnect_interval=int(config_cam.get("reconnect_interval", 15))
         )
+        self.height = 640
+        self.width = 360
         # Contabilidade de Métricas com Zabbix
         self.quadros_processados = 0
         self.quadros_detectados = 0
@@ -179,9 +174,12 @@ class AoFBaseFFMPEG(threading.Thread, ABC):
     # Função para obter uma imagem JPEG da thread da classe RTSPFrameGrabber
     def get_frame(self):
         try:
-            frame, pts = self.grabber.get_frame()
-            if frame is None:
+            raw_bytes, pts = self.grabber.get_frame()
+            if raw_bytes is None:
                 return None, None, None
+
+            yuv = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((int(self.height* 1.5), self.width))
+            frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
 
             result, encoded_img = cv2.imencode('.jpg', frame)
             if not result:
@@ -310,25 +308,27 @@ class AoFBaseFFMPEG(threading.Thread, ABC):
 
     # Função para processamento distribuído via RabbitMQ
     def send_frame_to_rabbit(self, frame_bytes, camera):
-        credentials = pika.PlainCredentials(self.config_sys["rabbitmq"]["user"], self.config_sys["rabbitmq"]["password"])
+        credentials = pika.PlainCredentials(
+            self.config_sys["rabbitmq"]["user"], self.config_sys["rabbitmq"]["password"]
+        )
         parameters = pika.ConnectionParameters(
-            host = self.config_sys["rabbitmq"]["host"],
-            port = self.config_sys["rabbitmq"]["port"],
-            virtual_host = self.config_sys["rabbitmq"]["virtual_host"],
-            credentials = credentials
+            host=self.config_sys["rabbitmq"]["host"],
+            port=self.config_sys["rabbitmq"]["port"],
+            virtual_host=self.config_sys["rabbitmq"]["virtual_host"],
+            credentials=credentials,
         )
 
         connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
-        result = channel.queue_declare(queue='', exclusive=True)
+        result = channel.queue_declare(queue="", exclusive=True)
         callback_queue = result.method.queue
 
         corr_id = str(uuid.uuid4())
 
         payload = {
-            'image': frame_bytes,
-            'y_conf': camera['y_conf'],
-            'y_iou': camera['y_iou']
+            "image": frame_bytes,
+            "y_conf": camera["y_conf"],
+            "y_iou": camera["y_iou"],
         }
         body = msgpack.packb(payload, use_bin_type=True)
         response = {}
@@ -337,36 +337,34 @@ class AoFBaseFFMPEG(threading.Thread, ABC):
             if props.correlation_id == corr_id:
                 payload = msgpack.unpackb(body, raw=False)
 
-                boxes = payload['results']['boxes']
-                scores = payload['results']['scores']
-                classes = payload['results']['classes']
+                boxes = payload["results"]["boxes"]
+                scores = payload["results"]["scores"]
+                classes = payload["results"]["classes"]
 
                 results = [
-                    {
-                        'bbox': bbox,
-                        'score': score,
-                        'class': cls
-                    } for bbox, score, cls in zip(boxes, scores, classes)
+                    {"bbox": bbox, "score": score, "class": cls}
+                    for bbox, score, cls in zip(boxes, scores, classes)
                 ]
-                response['results'] = results
+                response["results"] = results
                 ch.stop_consuming()
 
-        channel.basic_consume(queue=callback_queue, on_message_callback=on_response, auto_ack=True)
+        channel.basic_consume(
+            queue=callback_queue, on_message_callback=on_response, auto_ack=True
+        )
         channel.basic_publish(
-            exchange = self.config_sys["rabbitmq"]["exchange"],
-            routing_key = self.config_sys["rabbitmq"]["routing_key"],
+            exchange=self.config_sys["rabbitmq"]["exchange"],
+            routing_key=self.config_sys["rabbitmq"]["routing_key"],
             properties=pika.BasicProperties(
-                reply_to=callback_queue,
-                correlation_id=corr_id
+                reply_to=callback_queue, correlation_id=corr_id
             ),
-            body=body
+            body=body,
         )
 
         channel.start_consuming()
         connection.close()
-        return response if 'results' in response else None
+        return response if "results" in response else None
 
-    # Retorna todas as BBox em formato lista considerando a possibilidade de mais de uma por frame
+            # Retorna todas as BBox em formato lista considerando a possibilidade de mais de uma por frame
     # Calcula a BBox média em pixel e em percentual em relação à dimensão da imagem
     def processar_bboxes(self, todos_results):
         img_width = self.config_cam["width"]

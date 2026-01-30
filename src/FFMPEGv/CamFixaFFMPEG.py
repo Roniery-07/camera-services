@@ -35,7 +35,7 @@ class CameraFixaFFMPEG(CamBaseFixaFFMPEG):
         self.logger.info(f"Início do período de busca.")
         while True:
             # Obtendo frames (snapshot) por meio do método self.get_frame()
-            frame, frame_bytes = self.get_frame()       
+            frame, frame_bytes, _ = self.get_frame()       
             if frame is None:
                 time.sleep(0.1)
                 continue
