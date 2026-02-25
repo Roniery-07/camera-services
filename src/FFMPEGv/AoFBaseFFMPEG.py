@@ -1,195 +1,96 @@
 from abc import ABC, abstractmethod
-import threading
-from Utilidades import configurar_logger
+import multiprocessing as mp
+from multiprocessing import shared_memory
+import logging
 import cv2
 import pika
 import uuid
 import msgpack
 import imageio.v2 as imageio
 from datetime import datetime
+import time
 import os
 import json
-import requests
 import numpy as np
 import mysql.connector
-import subprocess as sp
-import time
-import re
-import select
+from FFMPEGv.RTSPFrameGrabber import RTSPFrameGrabber
 
-# Thread para controle FFMPEG
-import threading
-import subprocess as sp
-import numpy as np
-import time
-import cv2
-import os
-import signal
-
-class RTSPFrameGrabber:
-    def __init__(self, rtsp_url, frame_shape, logger, ffmpeg_bin="ffmpeg", reconnect_interval=15):
-        self.rtsp_url = rtsp_url
-        self.logger = logger
-        self.ffmpeg_bin = ffmpeg_bin
-        
-        self.width = 640
-        self.height = 360
-        
-#        self.frame_byte_size = self.width * self.height * 3
-        self.frame_byte_size = int(self.width * self.height * 1.5)
-        self._frame_lock = threading.Lock()
-        self._latest_frame = None
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self):
-        if not self._thread.is_alive():
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-            self.logger.info(f"[Grabber] Iniciado para: {self.rtsp_url}")
-
-    def stop(self):
-        self._stop_event.set()
-        if self._thread.is_alive():
-            self._thread.join(timeout=2)
-
-    def get_frame(self):
-        with self._frame_lock:
-            if self._latest_frame is not None:
-                return self._latest_frame, None
-            else:
-                return None, None
-
-    def _run(self):
-        while not self._stop_event.is_set():
-            process = None
-            try:
-                ffmpeg_cmd = [
-                    self.ffmpeg_bin,
-                    "-hide_banner",
-                    "-loglevel", "error",
-                    
-                    # --- RESILIÊNCIA DE REDE (Essencial para evitar travamentos) ---
-                    "-avoid_negative_ts", "make_zero",
-                    "-fflags", "+genpts+discardcorrupt",
-                    "-rtsp_transport", "tcp",
-                    "-timeout", "5000000",
-                    
-                    # --- HARDWARE DECODER + RESIZER (Tudo em um) ---
-                    # Usa o decoder específico da NVIDIA.
-                    # O argumento -resize aqui é nativo do decoder cuvid (muito rápido)
-                    "-c:v", "h264_cuvid", 
-                    "-resize", f"{self.width}x{self.height}",
-                    
-                    "-i", self.rtsp_url,
-                    
-                    "-r", "5",  # FPS desejado
-                    
-                    # --- SAÍDA ---
-                    # O cuvid entrega NV12 por padrão na GPU, o FFmpeg converte
-                    # automaticamente para YUV420p ao passar para a CPU (pipe)
-                    "-f", "rawvideo",
-                    "-pix_fmt", "yuv420p",
-                    "-"
-                ]
-                process = sp.Popen(ffmpeg_cmd, stdout=sp.PIPE, stderr=sp.PIPE, bufsize=10**7)
-
-                while not self._stop_event.is_set():
-                    # Lê frame compactado (YUV)
-                    raw_bytes = process.stdout.read(self.frame_byte_size)
-
-                    if len(raw_bytes) != self.frame_byte_size:
-                        if not self._stop_event.is_set():
-                            # Tenta ler o erro que sobrou no buffer do stderr
-                            # communicate() fecha o processo e devolve (stdout, stderr)
-                            _, stderr_out = process.communicate()
-                            
-                            msg_erro = "Sem mensagem de erro."
-                            if stderr_out:
-                                msg_erro = stderr_out.decode('utf-8', errors='ignore')
-
-                            self.logger.error(f"[FFmpeg CRASH] Esperado: {self.frame_byte_size}, Recebido: {len(raw_bytes)}")
-                            self.logger.error(f"--- LOG DO FFMPEG ---\n{msg_erro}\n---------------------")
-                        break
-
-                   
-                    with self._frame_lock:
-                        self._latest_frame = raw_bytes
-
-            except Exception as e:
-                self.logger.error(f"[Grabber] Erro: {e}")
-
-            finally:
-                if process:
-                    try:
-                        process.terminate()
-                        process.wait(timeout=2)
-                    except:
-                        process.kill()
-
-                if not self._stop_event.is_set():
-                    time.sleep(5)
-
- # Classe base para todos os tipos de câmeras
-class AoFBaseFFMPEG(threading.Thread, ABC):
-    def __init__(self, config_sys, config_cam, nome="Camera"):
-        super().__init__()  # Nome da thread padrão: Thread-1, Thread-2, etc.
-        self.nome = nome
+class AoFBaseFFMPEG(mp.Process, ABC):
+    def __init__(self, config_sys, config_cam, logger_name):
+        super().__init__()
         self.config_sys = config_sys
         self.config_cam = config_cam
-        # Definição de Logs
-        self.logger = configurar_logger(nome)
-        # Configura a classe para FFMPEG externo
-        #self.URL_STREAM = f"rtsp://10.0.5.246:2000/{self.config_cam['nomecamera']}?username=admin&password=4jAMH@h*W6@$W3K"
+        self.logger_name = logger_name
+        self.nome = config_cam.get("nomecamera", "Camera")
+        
         self.URL_STREAM = f"rtsp://10.0.5.18:8554/{self.config_cam['nomecamera']}"
-        self.frame_shape = (
-            int(config_cam.get("height", 720)),
-            int(config_cam.get("width", 1280)),
-            int(config_cam.get("channels", 3))
-        )
-        self.grabber = RTSPFrameGrabber(
-            rtsp_url = self.URL_STREAM,
-            frame_shape = self.frame_shape,
-            logger = self.logger,
-            ffmpeg_bin=config_cam.get("ffmpeg_bin", "ffmpeg"),
-            reconnect_interval=int(config_cam.get("reconnect_interval", 15))
-        )
-        self.height = 640
-        self.width = 360
-        # Contabilidade de Métricas com Zabbix
-        self.quadros_processados = 0
-        self.quadros_detectados = 0
-        self.lock = threading.Lock()
-
-    # Inicia a thread do grabber junto com a thread da classe base
-    def start(self):
-        self.grabber.start()
-        super().start()
-
-    @abstractmethod
-    def run(self):
-        pass
-
-    # Função para obter uma imagem JPEG da thread da classe RTSPFrameGrabber
-    def get_frame(self):
+        self.width = int(config_cam.get("width", 1280))
+        self.height = int(config_cam.get("height", 720))
+        
+        # YUV Size
+        self.frame_byte_size = int(self.width * self.height * 3)
+        
+        # 1. Allocate Shared Memory (Host)
         try:
-            raw_bytes, pts = self.grabber.get_frame()
-            if raw_bytes is None:
+            self.shm = shared_memory.SharedMemory(create=True, size=self.frame_byte_size)
+        except FileExistsError:
+            self.shm = shared_memory.SharedMemory(name=f"psm_{self.nome}")
+
+        # 2. Synchronization
+        self.lock = mp.Lock()
+        self.stop_event = mp.Event()
+
+        # 3. Initialize Grabber (Child Process)
+        self.grabber = RTSPFrameGrabber(
+            rtsp_url=self.URL_STREAM,
+            shm_name=self.shm.name,
+            frame_shape=(self.height, self.width, 3),
+            lock=self.lock,
+            stop_event=self.stop_event,
+            logger_name=self.logger_name,
+            ffmpeg_bin=config_cam.get("ffmpeg_bin", "ffmpeg")
+        )
+
+        # Shared Metrics
+        self.quadros_processados = mp.Value('i', 0)
+        self.quadros_detectados = mp.Value('i', 0)
+
+        self.logger = None
+        self.rabbit_connection = None
+        self.rabbit_channel = None
+        self.callback_queue = None
+
+    def stop(self):
+        self.stop_event.set()
+        self.grabber.join()
+        try:
+            self.shm.close()
+            self.shm.unlink()
+        except:
+            pass
+
+    def get_frame(self):
+        """Zero-copy read from Shared Memory."""
+        with self.lock:
+            # Read directly from the memory buffer into a numpy array, then copy it ONCE
+            # to release the lock immediately.
+            try:
+                frame = np.ndarray(
+                    (self.height, self.width, 3), 
+                    dtype=np.uint8, 
+                    buffer=self.shm.buf[:self.frame_byte_size]
+                ).copy()
+            except Exception as e:
+                if self.logger: self.logger.error(f"Memory read error: {e}")
                 return None, None, None
 
-            yuv = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((int(self.height* 1.5), self.width))
-            frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-
-            result, encoded_img = cv2.imencode('.jpg', frame)
-            if not result:
-                return None, None, None
-
-            return frame, encoded_img.tobytes(), pts
- 
-        except Exception as e:
-            self.logger.error(f"Erro ao obter frame: {e}.")
+        # Check if the frame is completely empty (camera disconnected/stalled)
+        if not frame.any():
+            self.logger.error("Frame is none")
             return None, None, None
+
+        # We return the raw frame array. We no longer need frame_bytes.
+        return frame, None, None
 
     # Funçao para o fornecimento das métricas via objeto thread
     def zbx_metrics(self):
@@ -306,65 +207,124 @@ class AoFBaseFFMPEG(threading.Thread, ABC):
             cv2.putText(image, label, (x_text, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         return image
 
-    # Função para processamento distribuído via RabbitMQ
-    def send_frame_to_rabbit(self, frame_bytes, camera):
-        credentials = pika.PlainCredentials(
-            self.config_sys["rabbitmq"]["user"], self.config_sys["rabbitmq"]["password"]
-        )
-        parameters = pika.ConnectionParameters(
-            host=self.config_sys["rabbitmq"]["host"],
-            port=self.config_sys["rabbitmq"]["port"],
-            virtual_host=self.config_sys["rabbitmq"]["virtual_host"],
-            credentials=credentials,
-        )
+    # --- RabbitMQ Logic ---
+    def _connect_rabbit(self):
+        retries = 5
+        for i in range(retries):
+            try:
+                self.logger.warning(f"Connecting to RabbitMQ (Attempt {i+1}/{retries})...")
+                credentials = pika.PlainCredentials(
+                    self.config_sys["rabbitmq"]["user"], 
+                    self.config_sys["rabbitmq"]["password"]
+                )
+                parameters = pika.ConnectionParameters(
+                    host=self.config_sys["rabbitmq"]["host"],
+                    port=self.config_sys["rabbitmq"]["port"],
+                    virtual_host=self.config_sys["rabbitmq"]["virtual_host"],
+                    credentials=credentials,
+                    heartbeat=60
+                )
+                self.rabbit_connection = pika.BlockingConnection(parameters)
+                self.rabbit_channel = self.rabbit_connection.channel()
+                
+                result = self.rabbit_channel.queue_declare(queue="", exclusive=True)
+                self.callback_queue = result.method.queue
+                
+                self.logger.info(f"RabbitMQ Connected on {self.callback_queue}")
+                return True # Success
+            except Exception as e:
+                self.logger.error(f"Rabbit Connection Attempt {i+1} failed: {e}")
+                time.sleep(2) # Wait before retrying
+                
+        return False # Failed all attempts
+    def _ensure_connection(self):
+        if self.rabbit_connection is None or self.rabbit_connection.is_closed:
+            self._connect_rabbit()
 
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        result = channel.queue_declare(queue="", exclusive=True)
-        callback_queue = result.method.queue
+    # Função para processamento distribuído via RabbitMQ
+    def send_frame_to_rabbit(self, frame, camera):
+        self.logger.info("sending frame")
+        self._ensure_connection()
+
+        if self.rabbit_channel is None: 
+            if self.logger: self.logger.error("Connection does not exists")
+            return None
+        
+        if not isinstance(frame, np.ndarray):
+            if self.logger: self.logger.error(f"Encoding Error: Expected numpy array, got {type(frame)}. Fix CameraFixaFFMPEG.")
+            return None
+
+        try:
+            ret, encoded_img = cv2.imencode('.jpg', frame)
+            self.logger.info("Encoding Image")
+            if not ret:
+                if self.logger: self.logger.error("Failed to encode frame to JPEG")
+                return None
+            image_payload = encoded_img.tobytes()
+        except Exception as e:
+            if self.logger: self.logger.error(f"Encoding Error: {e}")
+            return None
 
         corr_id = str(uuid.uuid4())
-
-        payload = {
-            "image": frame_bytes,
-            "y_conf": camera["y_conf"],
-            "y_iou": camera["y_iou"],
-        }
-        body = msgpack.packb(payload, use_bin_type=True)
-        response = {}
-
+        response = None
+        
         def on_response(ch, method, props, body):
+            nonlocal response
             if props.correlation_id == corr_id:
-                payload = msgpack.unpackb(body, raw=False)
+                try:
+                    payload_decoded = msgpack.unpackb(body, raw=False)
+                    if "results" in payload_decoded:
+                        boxes = payload_decoded["results"].get("boxes", [])
+                        scores = payload_decoded["results"].get("scores", [])
+                        classes = payload_decoded["results"].get("classes", [])
+                        formatted = [{"bbox": b, "score": s, "class": c} for b, s, c in zip(boxes, scores, classes)]
+                        response = {"results": formatted}
+                    else:
+                        response = {"results": []}
+                except:
+                    response = {"results": []}
+                finally:
+                    # CRITICAL FIX: This tells start_consuming() to exit!
+                    # Without this, the code freezes forever waiting for more messages.
+                    ch.stop_consuming()
 
-                boxes = payload["results"]["boxes"]
-                scores = payload["results"]["scores"]
-                classes = payload["results"]["classes"]
+        try:
+            self.rabbit_channel.basic_consume(
+                queue=self.callback_queue, 
+                on_message_callback=on_response, 
+                auto_ack=True
+            )
 
-                results = [
-                    {"bbox": bbox, "score": score, "class": cls}
-                    for bbox, score, cls in zip(boxes, scores, classes)
-                ]
-                response["results"] = results
-                ch.stop_consuming()
+            payload = {
+                "image": image_payload,
+                "y_conf": camera.get("y_conf", 0.5),
+                "y_iou": camera.get("y_iou", 0.45),
+            }
+            body = msgpack.packb(payload, use_bin_type=True)
+            
+            self.rabbit_channel.basic_publish(
+                exchange=self.config_sys["rabbitmq"]["exchange"],
+                routing_key=self.config_sys["rabbitmq"]["routing_key"],
+                properties=pika.BasicProperties(
+                    reply_to=self.callback_queue, 
+                    correlation_id=corr_id, 
+                ),
+                body=body
+            )
 
-        channel.basic_consume(
-            queue=callback_queue, on_message_callback=on_response, auto_ack=True
-        )
-        channel.basic_publish(
-            exchange=self.config_sys["rabbitmq"]["exchange"],
-            routing_key=self.config_sys["rabbitmq"]["routing_key"],
-            properties=pika.BasicProperties(
-                reply_to=callback_queue, correlation_id=corr_id
-            ),
-            body=body,
-        )
+            self.rabbit_channel.start_consuming()
 
-        channel.start_consuming()
-        connection.close()
-        return response if "results" in response else None
+            return response if response is not None and 'results' in response else None
 
-            # Retorna todas as BBox em formato lista considerando a possibilidade de mais de uma por frame
+        except Exception as e:
+            if self.logger: self.logger.error(f"Rabbit Publish Error: {e}")
+            try:
+                self.rabbit_connection.close()
+            except: pass
+            self.rabbit_connection = None
+            return None
+
+    # Retorna todas as BBox em formato lista considerando a possibilidade de mais de uma por frame
     # Calcula a BBox média em pixel e em percentual em relação à dimensão da imagem
     def processar_bboxes(self, todos_results):
         img_width = self.config_cam["width"]

@@ -1,106 +1,183 @@
 import json
-from Utilidades import buscar_cameras, configurar_logger
 import time
-from CamFixa import CameraFixa
-from CamPTZBosch import CameraPTZMBosch
-from CamPTZMoveDetect import CamPTZMoveDetect
+import sys
+import os
+import logging
+import multiprocessing as mp
+from Utilidades import buscar_cameras # Util imports
 from pyzabbix import ZabbixMetric, ZabbixSender
 from sdnotify import SystemdNotifier
-# Teste com versão FFMPEG
+
+# Import the NEW Process-based classes
 from FFMPEGv.CamFixaFFMPEG import CameraFixaFFMPEG
-from FFMPEGv.CamPTZBoschFFMPEG import CameraPTZMBoschFFMPEG
 
-# Carrega a configuração
-with open("config.json", "r") as f:
-    config_sys = json.load(f)
-    config_cam = "{}"
+def setup_root_logger():
+    """
+    Configures logging to write to a file at the project root 
+    AND print to console. Child processes will inherit this.
+    """
+    log_file_path = '/var/log/aof_ng_d.log'
 
-# Logger do sistema principal
-logger = configurar_logger("supervisor")
+    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Comunicação com whatchdog
-notifier = SystemdNotifier()
+    # File Handler
+    file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+    file_handler.setFormatter(log_formatter)
 
-# Lista de Câmeras
-cameras = buscar_cameras(config_sys)
+    # Console Handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
 
-# Lista de threads
-threads = {}
-
-# Cria thread conforme modelo (0-Fixa, 1-PtzBosch, 2-Fixa(FFMPEG), 3-PtzBosch(FFMPEG), 4-PtzDetecçãoMovimento)
-def criar_thread(cam):
-    if cam["modelo"] == 0:
-        return CameraFixa(config_sys=config_sys, config_cam=cam, nome=cam["nomecamera"])
-    elif cam["modelo"] == 1:
-        return CameraPTZMBosch(config_sys=config_sys, config_cam=cam, nome=cam["nomecamera"])
-    elif cam["modelo"] == 2:
-        return CameraFixaFFMPEG(config_sys=config_sys, config_cam=cam, nome=cam["nomecamera"])
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Clean previous handlers
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+        
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+# --- 2. FACTORY FUNCTION ---
+def criar_processo(cam, config_sys):
+    """
+    Creates the Process object based on the camera model.
+    """
+    logger_name = f"Cam.{cam['nomecamera']}"
+    
+    # Models 2 and 3 are the FFMPEG/Multiprocessing ones
+    if cam["modelo"] == 2:
+        return CameraFixaFFMPEG(config_sys=config_sys, config_cam=cam, logger_name=logger_name)
+    
     elif cam["modelo"] == 3:
-        return CameraPTZMBoschFFMPEG(config_sys=config_sys, config_cam=cam, nome=cam["nomecamera"])
-    elif cam["modelo"] == 4:
-        return CamPTZMoveDetect(config_sys=config_sys, config_cam=cam, nome=cam["nomecamera"])
+        # return CameraPTZMBoschFFMPEG(config_sys=config_sys, config_cam=cam, logger_name=logger_name)
+        pass 
+        
+    return None
 
-# Inicia as threads
-for cam in cameras:
-    t = criar_thread(cam)
-    t.start()
-    threads[cam["nomecamera"]] = (t, cam)
+def main():
+    # 1. Setup Logging First
+    setup_root_logger()
+    logger = logging.getLogger("Supervisor")
+    logger.info("Initializing System...")
 
-# Objeto Zabbix Sender
-zabbix = ZabbixSender(zabbix_server = config_sys["zabbix"]["zbx_server_ip"])
-
-# Tempo do ciclo do supervisor
-T_SUPERVISOR = 60
-
-# Loop de supervisão das threads
-while True:
-    # Métricas e Discovery Zabbix
-    zbx_metricas = []
-    zbx_discovery = []
-    # Totalização de métricas de quadros processados e detectados
-    total_quadros_processados = 0
-    total_quadros_detectados = 0
-    total_erros_threads = 0
-
-    # Tempo de espera para verificação de threads e envio de dados ao Zabbix
-    time.sleep(T_SUPERVISOR)
-    for nome, (t, cam) in list(threads.items()):
-        if not t.is_alive():
-            logger.error(f"Thread da câmera {nome} caiu. Reiniciando...")
-            total_erros_threads += 1
-            try:
-                nova_thread = criar_thread(cam)
-                nova_thread.start()
-                threads[nome] = (nova_thread, cam)
-            except Exception as e:
-                logger.error(f"Falha ao reiniciar a thread da câmera {nome}: {e}")
-
-        # A cada 30 segundos obtém os dados de quadros para envio ao zabbix (considerando sleep 5)
-        try:
-            quadros_processados, quadros_detectados = t.zbx_metrics()
-            total_quadros_processados += quadros_processados
-            total_quadros_detectados += quadros_detectados
-            zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], f"aofngd.quadros_processados[{nome}]", quadros_processados))
-            zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], f"aofngd.quadros_detectados[{nome}]", quadros_detectados))
-
-            zbx_discovery.append({"{#CAMERA}": nome})
-        except Exception as e:
-            logger.error(f"Falha ao obter métricas de quadros processados e detectados: {e}")
-
-    # Envio das métrias para o Zabbix
-    try: 
-        # Envio do Discovery
-        zbx_discovery_data = []
-        zbx_discovery_data.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.discovery", json.dumps({"data": zbx_discovery})))
-        result_discovery = zabbix.send(zbx_discovery_data)
-        # Envio de Métricas
-        zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_processados", total_quadros_processados))
-        zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_detectados", total_quadros_detectados))
-        zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_erros_threads", total_erros_threads))
-        result_metricas = zabbix.send(zbx_metricas)
-        logger.info(f"Zabbix Métricas: {result_metricas}")
+    # 2. Load Config
+    try:
+        with open("config.json", "r") as f:
+            config_sys = json.load(f)
     except Exception as e:
-        logger.error(f"Falha ao enviar métricas para o Zabbix: {e}")
+        logger.error(f"Failed to load config.json: {e}")
+        return
 
-    # Notifica vida a watchdog
-    notifier.notify("WATCHDOG=1")
+    # 3. Systemd Watchdog
+    notifier = SystemdNotifier()
+
+    # 4. Get Cameras from DB
+    cameras = buscar_cameras(config_sys)
+    
+    # Dictionary to hold running processes: { "CameraName": (ProcessObj, ConfigDict) }
+    processos = {}
+
+    # 5. Start Processes
+    for cam in cameras:
+        try:
+            p = criar_processo(cam, config_sys)
+            if p:
+                p.start()
+                processos[cam["nomecamera"]] = (p, cam)
+                logger.info(f"Process started for {cam['nomecamera']} (PID: {p.pid})")
+            else:
+                logger.warning(f"Model {cam['modelo']} not implemented yet or skipped.")
+        except Exception as e:
+            logger.error(f"Failed to start process for {cam['nomecamera']}: {e}")
+
+    # Zabbix Sender
+    zabbix = ZabbixSender(zabbix_server=config_sys["zabbix"]["zbx_server_ip"])
+
+    # Loop Settings
+    T_SUPERVISOR = 60
+    
+    try:
+        while True:
+            # FIX: Restored the loop. If you sleep 60s straight, Systemd might kill this service.
+            # We sleep in 1s chunks to keep the Watchdog happy.
+            for _ in range(T_SUPERVISOR):
+                time.sleep(1)
+                notifier.notify("WATCHDOG=1") 
+
+            # --- MONITORING LOOP ---
+            zbx_metricas = []
+            zbx_discovery = []
+            total_quadros_processados = 0
+            total_quadros_detectados = 0
+            total_erros_threads = 0
+            
+            # Create a list copy to avoid Runtime error if dictionary changes during iteration
+            for nome, (p, cam) in list(processos.items()):
+                
+                # A. Check Health
+                if not p.is_alive():
+                    logger.error(f"Process for {nome} died (Exit Code: {p.exitcode}). Restarting...")
+                    total_erros_threads += 1
+                    
+                    # Cleanup Zombie Process
+                    p.join()
+                    
+                    try:
+                        novo_p = criar_processo(cam, config_sys)
+                        if novo_p:
+                            novo_p.start()
+                            processos[nome] = (novo_p, cam)
+                            logger.info(f"Restarted {nome} with PID {novo_p.pid}")
+                        continue # Skip metrics for this dead cycle
+                    except Exception as e:
+                        logger.error(f"Failed to restart {nome}: {e}")
+                        continue
+
+                # B. Collect Metrics (Directly from Shared Memory Value)
+                try:
+                    # In Multiprocessing, we read the .value attribute safely
+                    q_proc = p.quadros_processados.value
+                    q_det = p.quadros_detectados.value
+                    
+                    total_quadros_processados += q_proc
+                    total_quadros_detectados += q_det
+
+                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], f"aofngd.quadros_processados[{nome}]", q_proc))
+                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], f"aofngd.quadros_detectados[{nome}]", q_det))
+                    zbx_discovery.append({"{#CAMERA}": nome})
+                except Exception as e:
+                    logger.error(f"Metric collection failed for {nome}: {e}")
+
+            # --- ZABBIX SENDING ---
+#            try:
+#                # Discovery
+#                if zbx_discovery:
+#                    zbx_discovery_data = [ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.discovery", json.dumps({"data": zbx_discovery}))]
+#                    zabbix.send(zbx_discovery_data)
+#
+#                # Metrics
+#                if zbx_metricas:
+#                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_processados", total_quadros_processados))
+#                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_detectados", total_quadros_detectados))
+#                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_erros_threads", total_erros_threads))
+#                    
+#                    result = zabbix.send(zbx_metricas)
+#                    logger.info(f"Zabbix Sent: {result}")
+#                    
+#            except Exception as e:
+#                logger.error(f"Zabbix Send Failed: {e}")
+
+    except KeyboardInterrupt:
+        logger.info("Stopping Supervisor...")
+        # Graceful Shutdown
+        for nome, (p, _) in processos.items():
+            logger.info(f"Stopping {nome}...")
+            p.stop() # Calls the stop method we defined in AoFBaseFFMPEG
+            p.join(timeout=5)
+            if p.is_alive():
+                p.terminate()
+        logger.info("Bye.")
+
+if __name__ == "__main__":
+    main()

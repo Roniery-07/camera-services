@@ -1,150 +1,144 @@
 from FFMPEGv.AoFBaseFFMPEG import AoFBaseFFMPEG
 from FFMPEGv.CamBaseFixaFFMPEG import CamBaseFixaFFMPEG
-import mysql.connector
-import json
+import logging
 import time
+import numpy as np
 
-# Subclasse de Câmeras Fixas
-class CameraFixaFFMPEG(CamBaseFixaFFMPEG):
+class CameraFixaFFMPEG(AoFBaseFFMPEG, CamBaseFixaFFMPEG):
 
     def run(self):
-        self.logger.info("Thread Câmera Fixa iniciada.")
+        # 1. INITIALIZATION INSIDE PROCESS
+        self.logger = logging.getLogger(self.logger_name)
+        self.logger.info(f"Process Started (PID: {self.pid})")
 
-        # Obtém informações da câmera
+        self.grabber.start()
+        time.sleep(3)
+
+        if not self._connect_rabbit(): # Modify _connect_rabbit to return True/False
+            self.logger.critical("Could not connect to RabbitMQ. Terminating process.")
+            return
+        # Update Config
         camera = self.atualiza_dados_camera_fixa(self.config_sys, self.config_cam)
+        if not camera:
+            self.logger.error("Failed to fetch camera config from DB. Exiting.")
+            return
+
         duracaobusca = camera["duracaobusca"]
         duracaoconfirmacao = camera["duracaoconfirmacao"]
 
-        # Temporizador para o processos de busca
+        # Timers
         deadline = time.monotonic() + duracaobusca
         emconfirmacao = False
 
-        # Limitação de FPS
-        frames_por_segundo = 1.0 / float(self.config_sys["detector"]["max_fps_processamento"])
-        timestamp_ultimo_frame = time.time()
+        # FPS Control
+        fps_target = float(self.config_sys["detector"]["max_fps_processamento"])
+        intervalo_entre_frames = 1.0 / fps_target
+        proximo_processamento = time.time()
+        
+        # Shared Memory Deduplication
+        ultimo_frame_bytes = None
 
-        # Contagem e armazenamento de frames
+        # Data Containers
         detection_count = 0
         detection_count_confirmacao = 0
         analyzed_frames_confirmacao = 0 
         analyzed_frames = []
-            
-        # Variável que armazena todos os results obtidos
         todos_results = []
-                
+        
         self.logger.info(f"Início do período de busca.")
-        while True:
-            # Obtendo frames (snapshot) por meio do método self.get_frame()
-            frame, frame_bytes, _ = self.get_frame()       
-            if frame is None:
-                time.sleep(0.1)
+
+        # 2. MAIN LOOP
+        while not self.stop_event.is_set():
+            # Idle sleep
+            time.sleep(0.01)
+            
+            # Rate Limit
+            tempo_agora = time.time()
+            if tempo_agora < proximo_processamento:
                 continue
 
-            # Limitação de FPS
-            tempo_agora = time.time()
-            tempo_desde_ultimo_frame = tempo_agora - timestamp_ultimo_frame
-            tempo_espera = frames_por_segundo - tempo_desde_ultimo_frame
-            if tempo_espera > 0:
-                time.sleep(tempo_espera)
-            timestamp_ultimo_frame = time.time()
+            proximo_processamento = max(tempo_agora + intervalo_entre_frames, proximo_processamento + intervalo_entre_frames)
 
-            # Envia frame para processamento por meio do RabbitMQ (processamento distribuído)
-            response = self.send_frame_to_rabbit(frame_bytes, camera)
-            results = response['results']
-            todos_results.append(results)
+            self.logger.info(f"prox processament: {proximo_processamento} - intervalor entre frames: {intervalo_entre_frames} ")
+            # Get Frame
+            frame, frame_bytes, _ = self.get_frame()        
+            if frame is None:
+                self.logger.info("frame is none")
+                continue
 
-            # Contabiliza e notifica imeditamente em caso de detecção no frame
+            # Deduplicate
+#            if frame_bytes == ultimo_frame_bytes:
+#                continue
+
+            # Update State
+            ultimo_frame_bytes = frame_bytes
+            # Send to AI
+            response = self.send_frame_to_rabbit(frame, camera)
+            print(f"reponse: {response}")
+            #self.logger.info(f"Sending data to AI - Length: {len(frame)}")
+            results = []
+            if response and 'results' in response:
+                results = response['results']
+                todos_results.append(results)
+
+            # Check Detections
             if len(results) > 0:
-                self.logger.warning(f"Detectado {self.config_sys['detector']['CLASSES'][int(results[0]['class'])]} com Score {float(results[0]['score']):.3f} na BBox {list(map(int, results[0]['bbox']))}.")
+                cls_name = self.config_sys['detector']['CLASSES'][int(results[0]['class'])]
+                score = float(results[0]['score'])
+                self.logger.warning(f"Detectado {cls_name} ({score:.2f})")
+                
                 detection_count += 1
                 detection_count_confirmacao += 1
+            
             analyzed_frames_confirmacao += 1
-
-            # Reservando Frames sem BBox e com BBox
+            
+            # Store frame (Consider disabling this if RAM issues occur)
             analyzed_frames.append(frame.copy())
 
-            # Controle dos temporizadores
-            agora = time.monotonic()
+            # Logic Gate / Timers
+            agora_monotonic = time.monotonic()
 
-            # Controla a dilação de tempo
-            if agora < deadline:
+            if agora_monotonic < deadline:
                 continue
-                #
+            
+            # Transition to Confirmation Mode?
             elif detection_count > 0 and not emconfirmacao:
                 self.logger.warning(f"Iniciando o período de confirmação.")
-                # BBox de maior score
-                bbox_maior_score = self.bbox_maior_score(todos_results)
-                bbox_maior_score = list(map(int, bbox_maior_score["bbox"]))
-                # Iniciando período de confirmação
                 deadline += duracaoconfirmacao
                 emconfirmacao = True
-                # Resetando contadores de frames confirmados no início do novo período
                 detection_count_confirmacao = 0
                 analyzed_frames_confirmacao = 0
-                #
                 continue
 
-            # Fim do preíodo de busca ou confirmação na coordenada
-            self.logger.info(f"Final da busca: {len(analyzed_frames)} Frames Analisados com {detection_count} Detecções.")
+            # End of Cycle
+            self.logger.info(f"Fim Ciclo: {len(analyzed_frames)} Frames, {detection_count} Detecções.")
 
-            # Contabilizando dados do processamento
+            # Metrics & DB
             qt_analyzed_frames = len(analyzed_frames)
-            qt_analyzed_frames_busca = qt_analyzed_frames-analyzed_frames_confirmacao
-            qt_detection_count_busca = detection_count-detection_count_confirmacao
+            qt_analyzed_frames_busca = qt_analyzed_frames - analyzed_frames_confirmacao
+            qt_detection_count_busca = detection_count - detection_count_confirmacao
 
-            # Salva informações de processamento para os períodos que tiveram confirmação
             if emconfirmacao:
                 dados = [None, qt_analyzed_frames, qt_analyzed_frames_busca, analyzed_frames_confirmacao, detection_count, qt_detection_count_busca, detection_count_confirmacao]
-                # Envia para o banco de dados
-                processamentos_id = self.insere_dados_processamentos(self.config_sys, self.config_cam, dados)
+                self.insere_dados_processamentos(self.config_sys, self.config_cam, dados)
+                
+                # Video Saving Logic would go here...
 
-            # Verificando o threshold para geração de arquivo MP4
-            if (detection_count/qt_analyzed_frames) >= camera["perc_frames_para_mp4"]:
-                # Construção dos metadados
-                todas_bboxes, bbox_media_pixels, bbox_media_percentual, percentual_area_bbox_media = self.processar_bboxes(todos_results)
-                metadados = {}
-                metadados["timestamp"] = int(time.time())
-                metadados["idcamera"] = self.config_cam["idcamera"]
-                metadados["processamentos_id"] = processamentos_id
-                metadados["zm_id_monitor"] = self.config_cam["zm_id_monitor"]
-                metadados["nomecamera"] = self.config_cam["nomecamera"]
-                metadados["chat_id_telegram"] = self.config_cam["chat_id_telegram"]
-                metadados["analyzed_frames"] = qt_analyzed_frames
-                metadados["analyzed_frames_busca"] = qt_analyzed_frames_busca
-                metadados["analyzed_frames_confirmacao"] = analyzed_frames_confirmacao
-                metadados["detection_count"] = detection_count
-                metadados["detection_count_busca"] = qt_detection_count_busca
-                metadados["detection_count_confirmacao"] = detection_count_confirmacao
-                metadados["y_conf"] = self.config_cam["y_conf"]
-                metadados["y_iou"] = self.config_cam["y_iou"]
-                metadados["perc_frames_para_mp4"] = self.config_cam["perc_frames_para_mp4"]
-                metadados["fps"] = self.config_cam["fps"]
-                metadados["width"] = self.config_cam["width"]
-                metadados["height"] = self.config_cam["height"]
-                metadados["percentual_area_bbox_media"] = percentual_area_bbox_media
-                metadados["bbox_maior_score"] = bbox_maior_score
-                metadados["bbox_media_percentual"] = bbox_media_percentual
-                metadados["bbox_media_pixels"] = bbox_media_pixels
-                metadados["todas_bboxes"] = todas_bboxes
-                # Salva arquivos no disco
-                self.save_all_analyzed_video(metadados, analyzed_frames)
-
-            # Atualiza métricas para o Zabbix
-            with self.lock:
-                self.quadros_processados +=  len(analyzed_frames)
-                self.quadros_detectados += detection_count
-            # Resetando variáveis por falta de detecção (novo ciclo de busca)
+            # Update Shared Metrics safely
+            with self.quadros_processados.get_lock():
+                self.quadros_processados.value += len(analyzed_frames)
+            
+            # Reset
             analyzed_frames.clear()
             todos_results = []
             detection_count = 0
-            # Atualizando dados da câmera
+            
+            # Refresh Config
             camera = self.atualiza_dados_camera_fixa(self.config_sys, self.config_cam)
-            duracaobusca = camera["duracaobusca"]
-            duracaoconfirmacao = camera["duracaoconfirmacao"]
+            if camera:
+                duracaobusca = camera["duracaobusca"]
+                duracaoconfirmacao = camera["duracaoconfirmacao"]
 
-            self.logger.info(f"Início do período de busca.")
-
-            # Restabelecendo o controle de tempo
-            agora = time.monotonic()
-            deadline = agora + duracaobusca
+            self.logger.info(f"Reiniciando busca.")
+            deadline = time.monotonic() + duracaobusca
             emconfirmacao = False
