@@ -14,6 +14,7 @@ import json
 import numpy as np
 import mysql.connector
 from FFMPEGv.RTSPFrameGrabber import RTSPFrameGrabber
+import threading
 
 class AoFBaseFFMPEG(mp.Process, ABC):
     def __init__(self, config_sys, config_cam, logger_name):
@@ -22,36 +23,36 @@ class AoFBaseFFMPEG(mp.Process, ABC):
         self.config_cam = config_cam
         self.logger_name = logger_name
         self.nome = config_cam.get("nomecamera", "Camera")
-        
+        self.is_jpg_saved = False
+
         self.URL_STREAM = f"rtsp://10.0.5.18:8554/{self.config_cam['nomecamera']}"
         self.width = int(config_cam.get("width", 1280))
         self.height = int(config_cam.get("height", 720))
-        
-        # YUV Size
-        self.frame_byte_size = int(self.width * self.height * 3)
-        
-        # 1. Allocate Shared Memory (Host)
+
+        self.shm_size = 4 + self.width * self.height
+
         try:
-            self.shm = shared_memory.SharedMemory(create=True, size=self.frame_byte_size)
+            self.shm = shared_memory.SharedMemory(create=True, size=self.shm_size)
         except FileExistsError:
             self.shm = shared_memory.SharedMemory(name=f"psm_{self.nome}")
 
-        # 2. Synchronization
         self.lock = mp.Lock()
-        self.stop_event = mp.Event()
+        self.stop_event = mp.Event()          
+        self.frame_ready_event = threading.Event()
 
-        # 3. Initialize Grabber (Child Process)
         self.grabber = RTSPFrameGrabber(
             rtsp_url=self.URL_STREAM,
             shm_name=self.shm.name,
-            frame_shape=(self.height, self.width, 3),
+            shm_size=self.shm_size,           
             lock=self.lock,
             stop_event=self.stop_event,
             logger_name=self.logger_name,
+            width=self.width,
+            height=self.height,
+            frame_ready_event=self.frame_ready_event,
             ffmpeg_bin=config_cam.get("ffmpeg_bin", "ffmpeg")
         )
 
-        # Shared Metrics
         self.quadros_processados = mp.Value('i', 0)
         self.quadros_detectados = mp.Value('i', 0)
 
@@ -70,32 +71,38 @@ class AoFBaseFFMPEG(mp.Process, ABC):
             pass
 
     def get_frame(self):
-        """Zero-copy read from Shared Memory."""
-        with self.lock:
-            # Read directly from the memory buffer into a numpy array, then copy it ONCE
-            # to release the lock immediately.
-            try:
-                frame = np.ndarray(
-                    (self.height, self.width, 3), 
-                    dtype=np.uint8, 
-                    buffer=self.shm.buf[:self.frame_byte_size]
-                ).copy()
-            except Exception as e:
-                if self.logger: self.logger.error(f"Memory read error: {e}")
-                return None, None, None
-
-        # Check if the frame is completely empty (camera disconnected/stalled)
-        if not frame.any():
-            self.logger.error("Frame is none")
+        frame_available = self.frame_ready_event.wait(timeout=5.0)
+        if not frame_available:
+            if self.logger:
+                self.logger.warning("[Consumer] No frame received in 5s — camera may be down or in penalty.")
             return None, None, None
 
-        # We return the raw frame array. We no longer need frame_bytes.
-        return frame, None, None
+        self.frame_ready_event.clear()
 
-    # Funçao para o fornecimento das métricas via objeto thread
-    def zbx_metrics(self):
         with self.lock:
-            return self.quadros_processados, self.quadros_detectados
+            try:
+                frame_size = int.from_bytes(self.shm.buf[:4], byteorder='little')
+
+                if frame_size == 0 or frame_size + 4 > self.shm_size:
+                    self.logger.error(f"[Consumer] Invalid frame size in shm: {frame_size}")
+                    return None, None, None
+
+                jpeg_bytes = bytes(self.shm.buf[4:4 + frame_size])
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Memory read error: {e}")
+                return None, None, None
+
+        if not self.is_jpg_saved:
+            with open("frame-test.jpg", "wb") as f:
+                f.write(jpeg_bytes)
+            self.is_jpg_saved = True
+
+        return jpeg_bytes, None, None    
+
+    def zbx_metrics(self):
+            with self.lock:
+                return self.quadros_processados, self.quadros_detectados
 
     # Função para inserção dos dados dos processamentos realizados por câmera e coordenada
     def insere_dados_processamentos(self, config_sys, config_cam, dados):
@@ -243,31 +250,19 @@ class AoFBaseFFMPEG(mp.Process, ABC):
 
     # Função para processamento distribuído via RabbitMQ
     def send_frame_to_rabbit(self, frame, camera):
-        self.logger.info("sending frame")
         self._ensure_connection()
 
-        if self.rabbit_channel is None: 
+        if self.rabbit_channel is None:
             if self.logger: self.logger.error("Connection does not exists")
             return None
-        
-        if not isinstance(frame, np.ndarray):
-            if self.logger: self.logger.error(f"Encoding Error: Expected numpy array, got {type(frame)}. Fix CameraFixaFFMPEG.")
-            return None
 
-        try:
-            ret, encoded_img = cv2.imencode('.jpg', frame)
-            self.logger.info("Encoding Image")
-            if not ret:
-                if self.logger: self.logger.error("Failed to encode frame to JPEG")
-                return None
-            image_payload = encoded_img.tobytes()
-        except Exception as e:
-            if self.logger: self.logger.error(f"Encoding Error: {e}")
+        if not isinstance(frame, (bytes, bytearray)):
+            if self.logger: self.logger.error(f"Encoding Error: Expected bytes, got {type(frame)}.")
             return None
 
         corr_id = str(uuid.uuid4())
         response = None
-        
+
         def on_response(ch, method, props, body):
             nonlocal response
             if props.correlation_id == corr_id:
@@ -284,30 +279,30 @@ class AoFBaseFFMPEG(mp.Process, ABC):
                 except:
                     response = {"results": []}
                 finally:
-                    # CRITICAL FIX: This tells start_consuming() to exit!
-                    # Without this, the code freezes forever waiting for more messages.
                     ch.stop_consuming()
 
         try:
             self.rabbit_channel.basic_consume(
-                queue=self.callback_queue, 
-                on_message_callback=on_response, 
+                queue=self.callback_queue,
+                on_message_callback=on_response,
                 auto_ack=True
             )
 
             payload = {
-                "image": image_payload,
+                "image": frame,          
+                "width": self.width,
+                "height": self.height,
                 "y_conf": camera.get("y_conf", 0.5),
                 "y_iou": camera.get("y_iou", 0.45),
             }
             body = msgpack.packb(payload, use_bin_type=True)
-            
+
             self.rabbit_channel.basic_publish(
                 exchange=self.config_sys["rabbitmq"]["exchange"],
                 routing_key=self.config_sys["rabbitmq"]["routing_key"],
                 properties=pika.BasicProperties(
-                    reply_to=self.callback_queue, 
-                    correlation_id=corr_id, 
+                    reply_to=self.callback_queue,
+                    correlation_id=corr_id,
                 ),
                 body=body
             )

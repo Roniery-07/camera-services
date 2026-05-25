@@ -150,23 +150,23 @@ def main():
                     logger.error(f"Metric collection failed for {nome}: {e}")
 
             # --- ZABBIX SENDING ---
-#            try:
-#                # Discovery
-#                if zbx_discovery:
-#                    zbx_discovery_data = [ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.discovery", json.dumps({"data": zbx_discovery}))]
-#                    zabbix.send(zbx_discovery_data)
-#
-#                # Metrics
-#                if zbx_metricas:
-#                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_processados", total_quadros_processados))
-#                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_detectados", total_quadros_detectados))
-#                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_erros_threads", total_erros_threads))
-#                    
-#                    result = zabbix.send(zbx_metricas)
-#                    logger.info(f"Zabbix Sent: {result}")
-#                    
-#            except Exception as e:
-#                logger.error(f"Zabbix Send Failed: {e}")
+            try:
+                # Discovery
+                if zbx_discovery:
+                    zbx_discovery_data = [ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.discovery", json.dumps({"data": zbx_discovery}))]
+                    zabbix.send(zbx_discovery_data)
+
+                # Metrics
+                if zbx_metricas:
+                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_processados", total_quadros_processados))
+                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_quadros_detectados", total_quadros_detectados))
+                    zbx_metricas.append(ZabbixMetric(config_sys["zabbix"]["zbx_hostname"], "aofngd.total_erros_threads", total_erros_threads))
+                    
+                    result = zabbix.send(zbx_metricas)
+                    logger.info(f"Zabbix Sent: {result}")
+                    
+            except Exception as e:
+                logger.error(f"Zabbix Send Failed: {e}")
 
     except KeyboardInterrupt:
         logger.info("Stopping Supervisor...")
