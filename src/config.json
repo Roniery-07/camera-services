@@ -13,10 +13,10 @@
     "zbx_hostname": "AoFNGDDev"
   },
   "database": {
-   "host": "10.0.5.103",
-   "user": "AoFessaysBBKEnd_Dev",
-   "password": "YNc1n0CwWZN8SA[*",
-   "database": "AoFessays_Dev"
+    "host": "localhost",
+    "user": "root",
+    "password": "rootpassword",
+    "database": "mydatabase"
   },
   "locais": {
     "diretorio_videos": "/AoF_Deteccoes",
@@ -25,12 +25,15 @@
   "detector": {
     "max_fps_processamento": 2,
     "CLASSES": ["Fumaca", "Fogo"],
-    "COLORS": [[0, 255, 255], [0, 0, 255]]
+    "COLORS": [
+      [0, 255, 255],
+      [0, 0, 255]
+    ]
   },
   "telegram": {
     "bot_token": "1096125973:AAGtMnt0-G3wQVAIKAz-RXw-gNsENQ7y2hY"
   },
   "cameras": {
-    "zm_monitor_id":  [25, 26, 29, 2, 3, 6, 14, 15, 16, 17, 18, 19, 5]
+    "zm_monitor_id": [99]
   }
 }
