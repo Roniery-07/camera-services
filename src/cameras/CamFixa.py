@@ -16,9 +16,9 @@ class CameraFixa(AoFBase, CamBaseFixa):
         time.sleep(3)  # Give FFmpeg time to warm up
 
         # 3. Connect to RabbitMQ
-        # if not self._connect_rabbit():
-        #     self.logger.critical("Could not connect to RabbitMQ. Terminating.")
-        #     return
+        if not self._connect_rabbit():
+            self.logger.critical("Could not connect to RabbitMQ. Terminating.")
+            return
 
         # 4. Initial Camera Config Fetch
         camera = self.update_fixed_camera(self.config_sys, self.config_cam)

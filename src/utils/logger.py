@@ -7,7 +7,7 @@ def setup_root_logger():
     Configures logging to write to a file at the project root
     AND print to console. Child processes will inherit this.
     """
-    log_file_path = "/home/roniery-abreu/Projects/camera-services/aof.log"
+    log_file_path = "/var/log/aof_ng_d.log"
 
     log_formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -30,3 +30,5 @@ def setup_root_logger():
 
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
+
+    logging.getLogger("pika").setLevel(logging.WARNING)

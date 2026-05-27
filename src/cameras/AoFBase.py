@@ -23,12 +23,10 @@ class AoFBase(mp.Process, ABC):
         self.config_sys = config_sys
         self.config_cam = config_cam
         self.logger_name = logger_name
-        self.nome = config_cam.get("nomecamera", "Camera")
+        self.name = config_cam.get("nomecamera", "Camera")
         self.is_jpg_saved = False
+        self.URL_STREAM = f"rtsp://10.0.5.18:8554/{self.config_cam['nomecamera']}"
 
-        self.URL_STREAM = (
-            f"rtsp://admin:EKUFAU@192.168.18.203:554/Streaming/Channels/101"
-        )
         self.width = int(config_cam.get("image_width", 1280))
         self.height = int(config_cam.get("image_height", 720))
 
@@ -37,7 +35,7 @@ class AoFBase(mp.Process, ABC):
         try:
             self.shm = shared_memory.SharedMemory(create=True, size=self.shm_size)
         except FileExistsError:
-            self.shm = shared_memory.SharedMemory(name=f"psm_{self.nome}")
+            self.shm = shared_memory.SharedMemory(name=f"psm_{self.name}")
 
         self.lock = mp.Lock()
         self.stop_event = mp.Event()
@@ -157,7 +155,7 @@ class AoFBase(mp.Process, ABC):
     def save_all_analyzed_video(
         self, metadados, analyzed_frames, analyzed_frames_wbbox
     ):
-        camera_name = self.nome
+        camera_name = self.name
         output_dir = self.config_sys["locais"]["diretorio_videos"] + "/"
         os.makedirs(output_dir, exist_ok=True)
         FPS = self.config_sys["detector"]["max_fps_processamento"]
